@@ -12,6 +12,14 @@ import argparse
 import json
 import requests
 from typing import Dict, Any, Optional, List
+import unicodedata
+import platform
+
+# Platform-specific imports for file locking
+if platform.system() == "Windows":
+    import msvcrt
+else:
+    import fcntl
 
 # Import API clients conditionally to avoid hard dependencies
 try:
@@ -29,11 +37,29 @@ except ImportError:
 # No need for try/except for Deepseek since we're using requests
 HAVE_DEEPSEEK = True
 
+# Cross-platform file locking
+def lock_file(file_obj):
+    """Apply a file lock appropriate for the platform"""
+    if platform.system() == "Windows":
+        msvcrt.locking(file_obj.fileno(), msvcrt.LK_LOCK, 1)
+    else:
+        fcntl.flock(file_obj.fileno(), fcntl.LOCK_EX)
+
+def unlock_file(file_obj):
+    """Release a file lock appropriate for the platform"""
+    if platform.system() == "Windows":
+        msvcrt.locking(file_obj.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(file_obj.fileno(), fcntl.LOCK_UN)
+
 # Initialize encoding once
 ENCODING = tiktoken.get_encoding("cl100k_base")
 MAX_LENGTH = 15000
 MAX_RETRIES = 3
 RETRY_DELAY = 2
+
+# Add to constants at the top of the file
+ERROR_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pdf_processing_errors.log")
 
 # Available AI providers
 AI_PROVIDERS = {
@@ -138,6 +164,11 @@ class GeminiClient:
                     temperature=0.2
                 )
             )
+            
+            # Check if response has expected structure
+            if not hasattr(response, 'text'):
+                raise AttributeError("Unexpected response format from Gemini API")
+            
             return response.text
         except Exception as e:
             raise Exception(f"Gemini API error: {str(e)}")
@@ -160,7 +191,20 @@ class ClaudeClient:
                     {"role": "user", "content": content}
                 ]
             )
-            return message.content[0].text
+            
+            # Handle various response formats
+            if hasattr(message, 'content') and isinstance(message.content, list) and len(message.content) > 0:
+                if hasattr(message.content[0], 'text'):
+                    return message.content[0].text
+            
+            # Try to extract the text from different possible formats
+            if hasattr(message, 'content'):
+                if isinstance(message.content, str):
+                    return message.content
+                elif isinstance(message.content, dict) and 'text' in message.content:
+                    return message.content['text']
+            
+            raise ValueError("Unable to extract text from Claude API response")
         except Exception as e:
             raise Exception(f"Claude API error: {str(e)}")
 
@@ -206,6 +250,11 @@ class DeepseekClient:
 
 def get_api_details(provider: str, model: str):
     """Get API key and check if it's valid for the given provider"""
+    # Validate provider first
+    if provider not in AI_PROVIDERS:
+        available_providers = ", ".join(AI_PROVIDERS.keys())
+        raise ValueError(f"Unsupported provider '{provider}'. Available providers: {available_providers}")
+    
     env_var_name = f"{provider.upper()}_API_KEY"
     api_key = os.environ.get(env_var_name)
     
@@ -267,7 +316,7 @@ def sort_and_rename_pdfs(input_folder, corrupted_folder, renamed_folder, provide
                         pbar.update(1)
                         continue
                         
-                    input_path = os.path.join(input_folder, filename)
+                    input_path = os.path.normpath(os.path.join(input_folder, filename))
                     if not os.path.exists(input_path):
                         print(f"\nWarning: File {filename} no longer exists, skipping.")
                         pbar.update(1)
@@ -310,11 +359,16 @@ def process_pdf(input_path, filename, corrupted_folder, renamed_folder, pbar, pr
         pbar.set_postfix({"Status": "Renamed", "New Name": new_file_name})
         
         # Record progress
-        progress_f.write(f"{filename}\n")
-        progress_f.flush()
+        try:
+            lock_file(progress_f)
+            progress_f.write(f"{filename}\n")
+            progress_f.flush()
+        finally:
+            unlock_file(progress_f)
         
     except (PdfReadError, OSError, FileNotFoundError) as e:
-        print(f"\nError with file {filename}: {str(e)}")
+        error_msg = f"Error with file {filename}: {str(e)}"
+        print(f"\n{error_msg}")
         try:
             # Only attempt to move the file if it exists
             if os.path.exists(input_path):
@@ -324,30 +378,59 @@ def process_pdf(input_path, filename, corrupted_folder, renamed_folder, pbar, pr
             else:
                 pbar.set_postfix({"Status": "Error", "Message": "File not found"})
             
-            progress_f.write(f"{filename}\n")
-            progress_f.flush()
+            try:
+                lock_file(progress_f)
+                progress_f.write(f"{filename}\n")
+                progress_f.flush()
+            finally:
+                unlock_file(progress_f)
         except OSError as move_error:
             pbar.set_postfix({"Status": "Error", "Message": str(move_error)})
     except Exception as e:
-        print(f"\nUnexpected error with file {filename}: {str(e)}")
+        error_msg = f"Unexpected error with file {filename}: {str(e)}"
+        print(f"\n{error_msg}")
+        # Log to error file
+        try:
+            with open(ERROR_LOG_FILE, "a") as log:
+                log.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {error_msg}\n")
+        except Exception as log_error:
+            print(f"Warning: Could not write to error log: {str(log_error)}")
         pbar.set_postfix({"Status": "Error", "Message": "Unexpected error"})
     
     pbar.update(1)
 
 def get_new_filename_with_retry(pdf_content, max_retries=MAX_RETRIES):
     """Get new filename with retry mechanism for API failures."""
+    timeout_count = 0
     for attempt in range(max_retries):
         try:
             return get_filename_from_ai(pdf_content)
         except Exception as e:
-            if attempt < max_retries - 1:
-                print(f"\nAPI error: {str(e)}. Retrying in {RETRY_DELAY * (attempt + 1)} seconds...")
-                time.sleep(RETRY_DELAY * (attempt + 1))  # Exponential backoff
+            error_str = str(e).lower()
+            
+            # Check if it's a timeout-related error
+            is_timeout = any(timeout_term in error_str for timeout_term in ["timeout", "timed out", "connection", "network"])
+            
+            if is_timeout:
+                timeout_count += 1
+                wait_time = RETRY_DELAY * (2 ** timeout_count)  # Exponential backoff for network issues
+                print(f"\nAPI timeout/network error: {str(e)}. Retrying in {wait_time} seconds...")
             else:
+                wait_time = RETRY_DELAY * (attempt + 1)  # Linear backoff for other errors
+                print(f"\nAPI error: {str(e)}. Retrying in {wait_time} seconds...")
+                
+            time.sleep(wait_time)
+            
+            # Last attempt
+            if attempt == max_retries - 1:
                 print(f"\nFailed to get filename from API after {max_retries} attempts.")
-                # Fallback to timestamp-based name
                 timestamp = time.strftime('%Y%m%d%H%M%S', time.gmtime())
-                return f"untitled_document_{timestamp}"
+                
+                # Generate different prefix based on error type
+                if timeout_count > 0:
+                    return f"network_error_{timestamp}"
+                else:
+                    return f"untitled_document_{timestamp}"
 
 def get_filename_from_ai(pdf_content):
     """Get a filename suggestion from the selected AI model"""
@@ -362,8 +445,9 @@ def validate_and_trim_filename(initial_filename):
         timestamp = time.strftime('%Y%m%d%H%M%S', time.gmtime())
         return f'empty_file_{timestamp}'
     
-    # Remove any characters that aren't letters, numbers, or underscores
-    cleaned_filename = re.sub(r'[^a-zA-Z0-9_]', '', initial_filename)
+    # Normalize unicode and remove characters that aren't allowed
+    normalized = unicodedata.normalize('NFKD', initial_filename)
+    cleaned_filename = re.sub(r'[^a-zA-Z0-9_]', '', normalized)
     
     # If filename is empty after cleaning, use a default name
     if not cleaned_filename:
@@ -384,7 +468,7 @@ def handle_duplicate_filename(filename, folder):
     
     return filename
 
-def pdfs_to_text_string(filepath):
+def pdfs_to_text_string(filepath, max_pages=None):
     """Extract text from a PDF file, handling errors."""
     try:
         with open(filepath, 'rb') as file:
@@ -393,47 +477,79 @@ def pdfs_to_text_string(filepath):
             # Check if file is encrypted
             if reader.is_encrypted:
                 return "Error: PDF is encrypted and cannot be processed without a password."
-                
+            
+            # Handle very large PDFs
+            total_pages = len(reader.pages)
+            if max_pages is None and total_pages > 100:  # Default page limit for very large PDFs
+                max_pages = 100
+                print(f"Warning: PDF has {total_pages} pages. Limiting to first {max_pages} pages for performance.")
+            
+            # Limit number of pages if specified
+            if max_pages and total_pages > max_pages:
+                pages_to_process = reader.pages[:max_pages]
+                print(f"Processing first {max_pages} pages of {total_pages} total pages")
+            else:
+                pages_to_process = reader.pages
+            
+            # Process pages in batches to avoid memory issues
             content = ""
-            for page in reader.pages:
-                page_text = page.extract_text() or ""
-                content += page_text + " "
+            for page in pages_to_process:
+                try:
+                    page_text = page.extract_text() or ""
+                    content += page_text + " "
+                except Exception as e:
+                    print(f"Warning: Could not extract text from a page: {str(e)}")
             
             content = content.strip()
             
             if not content:
-                content = "Empty PDF document with no extractable text."
+                return "Empty PDF document with no extractable text."
             
-            # Check token count
-            num_tokens = len(ENCODING.encode(content))
-            if num_tokens > MAX_LENGTH:
-                content = content_token_cut(content)
+            # Use the dedicated function for token handling
+            return truncate_content_to_token_limit(content, MAX_LENGTH)
             
-            return content
     except (IOError, OSError) as e:
         return f"Error opening PDF: {str(e)}"
     except Exception as e:
         return f"Error reading PDF: {str(e)}"
 
-def content_token_cut(content):
-    """Truncate content to fit within token limit efficiently."""
+def truncate_content_to_token_limit(content, max_tokens):
+    """Truncate content to fit within token limit in a safe and efficient way."""
     try:
-        # Initial fast truncation to get close to the limit
+        # Get initial token count
         token_count = len(ENCODING.encode(content))
-        ratio = MAX_LENGTH / token_count
         
-        if ratio < 0.9:  # If we need to cut more than 10%
-            content = content[:int(len(content) * ratio * 1.1)]  # Add 10% margin
+        # If already within limits, return as is
+        if token_count <= max_tokens:
+            return content
+            
+        # For very large content, do a quick initial truncation
+        if token_count > max_tokens * 2:
+            # Estimate bytes per token (rough approximation)
+            bytes_per_token = len(content.encode('utf-8')) / token_count
+            target_bytes = int(max_tokens * bytes_per_token * 0.9)  # 90% of estimated target
+            content = content[:target_bytes]
+            token_count = len(ENCODING.encode(content))
         
-        # Fine-tuning loop
-        while len(ENCODING.encode(content)) > MAX_LENGTH:
-            content = content[:int(len(content) * 0.95)]  # Cut 5% at a time for fine-tuning
-        
+        # Now do a more precise truncation with binary search
+        if token_count > max_tokens:
+            # Binary search for the right truncation point
+            low, high = 0, len(content)
+            while high - low > 100:  # Close enough approximation
+                mid = (low + high) // 2
+                if len(ENCODING.encode(content[:mid])) <= max_tokens:
+                    low = mid
+                else:
+                    high = mid
+            
+            # Final truncation
+            content = content[:low]
+            
         return content
     except Exception as e:
-        # In case of encoding errors, just truncate the string directly
-        print(f"Warning: Error during token truncation: {str(e)}")
-        return content[:int(MAX_LENGTH / 4)]  # Rough approximation assuming 4 chars per token
+        print(f"Warning: Error during content truncation: {str(e)}")
+        # Fallback to a very conservative truncation
+        return content[:int(max_tokens * 3)]  # Assuming ~3 chars per token as fallback
 
 def list_available_models():
     """List all available AI models by provider"""
@@ -482,26 +598,50 @@ if __name__ == "__main__":
             list_available_models()
             sys.exit(0)
         
-        # Set API key if provided as argument
-        if args.api_key:
-            os.environ[f"{args.provider.upper()}_API_KEY"] = args.api_key
+        # Save original env var state if using command-line key
+        original_env = None
+        api_key_set = False
         
-        # Get folder paths from arguments or prompt user
-        input_folder = args.input or input("Enter the input folder path: ")
-        corrupted_folder = args.corrupted or input("Enter the corrupted PDFs folder path: ")
-        renamed_folder = args.renamed or input("Enter the renamed PDFs folder path: ")
+        try:
+            if args.api_key:
+                env_var = f"{args.provider.upper()}_API_KEY"
+                original_env = (env_var, os.environ.get(env_var))
+                os.environ[env_var] = args.api_key
+                api_key_set = True
+                print(f"Using provided {args.provider.capitalize()} API key")
+            
+            # Get folder paths from arguments or prompt user
+            input_folder = args.input or input("Enter the input folder path: ")
+            corrupted_folder = args.corrupted or input("Enter the corrupted PDFs folder path: ")
+            renamed_folder = args.renamed or input("Enter the renamed PDFs folder path: ")
 
-        # Process PDFs
-        success = sort_and_rename_pdfs(input_folder, corrupted_folder, renamed_folder, args.provider, args.model)
-        
-        if success:
-            print("PDF sorting and renaming completed successfully.")
-        else:
-            print("PDF sorting and renaming failed.")
-            sys.exit(1)
+            # Process PDFs
+            success = sort_and_rename_pdfs(input_folder, corrupted_folder, renamed_folder, args.provider, args.model)
+            
+            if success:
+                print("PDF sorting and renaming completed successfully.")
+                return_code = 0
+            else:
+                print("PDF sorting and renaming failed.")
+                return_code = 1
+        finally:
+            # Restore original environment if modified
+            if api_key_set and original_env:
+                try:
+                    env_var, original_value = original_env
+                    if original_value is None:
+                        os.environ.pop(env_var, None)
+                    else:
+                        os.environ[env_var] = original_value
+                except Exception as e:
+                    print(f"Warning: Could not restore original API key environment: {str(e)}")
+            
     except KeyboardInterrupt:
         print("\nProcess interrupted by user.")
-        sys.exit(1)
+        return_code = 130  # Standard return code for SIGINT
     except Exception as e:
         print(f"\nCritical error: {str(e)}")
-        sys.exit(1)
+        return_code = 1
+    
+    # Exit with appropriate code
+    sys.exit(return_code)
