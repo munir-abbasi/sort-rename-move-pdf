@@ -1,80 +1,146 @@
+# PDF Sort, Rename & Move Utility
 
-# PDF Sorter and Renamer
-This Python script automates the process of sorting and renaming PDF files using OpenAI's GPT model. It organizes large collections of PDFs by generating meaningful filenames based on their content.
-
-## Credits
-This script is a modified version of the original work by Brandon-c-tech. The original repository can be found at:
-https://github.com/Brandon-c-tech/PDFs-AI-rename
-I appreciate the foundation provided by the original author, which has been extended and modified to suit additional requirements.
+A powerful utility for organizing your PDF documents using AI. This tool extracts content from PDFs, uses AI to generate descriptive filenames, and sorts them into appropriate folders.
 
 ## Features
-- Processes PDF files from a specified input folder
-- Extracts text content from PDFs
-- Uses OpenAI's GPT-3.5-turbo model to generate relevant filenames
-- Handles corrupted or unreadable PDFs by moving them to a separate folder
-- Ensures unique filenames to prevent overwriting
-- Provides a progress bar for visual feedback during processing
+
+- **Multiple AI Provider Support**: Choose between OpenAI, Claude, Gemini, or Deepseek for text analysis
+- **Smart Filename Generation**: AI analyzes PDF content to create meaningful filenames
+- **Corrupted File Handling**: Automatically detects and segregates corrupted PDFs
+- **Progress Tracking**: Resumes processing if interrupted
+- **Flexible Command-Line Interface**: Easy to use with command-line arguments or interactive prompts
 
 ## Requirements
-- Python 3.6+
-- PyPDF2
-- tiktoken
-- openai
-- tqdm
+
+### Core Dependencies
+```
+python >= 3.7
+PyPDF2 >= 3.0.0
+tiktoken >= 0.5.0
+tqdm >= 4.66.0
+requests >= 2.31.0
+```
+
+### Provider-Specific Dependencies
+Install only what you need based on your preferred AI provider:
+
+```
+# For OpenAI
+openai >= 1.0.0
+
+# For Claude
+anthropic >= 0.5.0
+
+# For Gemini
+google-generativeai >= 0.3.0
+```
 
 ## Installation
-1. Clone this repository:
 
-`git clone https://github.com/yourusername/pdf-sorter-renamer.git cd pdf-sorter-renamer`
+1. Clone the repository:
+   ```
+   git clone https://github.com/yourusername/sort-rename-move-pdf.git
+   cd sort-rename-move-pdf
+   ```
 
-2. Install the required packages:
+2. Install the core dependencies:
+   ```
+   pip install PyPDF2 tiktoken tqdm requests
+   ```
 
-`pip install PyPDF2 tiktoken openai tqdm`
+3. Install provider-specific dependencies (choose at least one):
+   ```
+   # For OpenAI
+   pip install openai
+   
+   # For Claude
+   pip install anthropic
+   
+   # For Gemini
+   pip install google-generativeai
+   ```
 
-3. Set up your OpenAI API key as an environment variable:
+## API Keys
 
-`export OPENAI_API_KEY='your-api-key-here'`
+You'll need an API key for at least one of the supported AI providers:
+
+- **OpenAI**: Set as environment variable `OPENAI_API_KEY` or provide with `--api-key`
+- **Claude**: Set as environment variable `CLAUDE_API_KEY` or provide with `--api-key`
+- **Gemini**: Set as environment variable `GEMINI_API_KEY` or provide with `--api-key`
+- **Deepseek**: Set as environment variable `DEEPSEEK_API_KEY` or provide with `--api-key`
 
 ## Usage
-Run the script from the command line:
-`python sortrenamemovepdf.py`
 
-You will be prompted to enter:
-1. The input folder path containing the PDFs to process
-2. The folder path for storing corrupted PDFs
-3. The folder path for storing renamed PDFs
-The script will then process all PDF files in the input folder, renaming them based on their content and moving any corrupted files to the specified folder.
+### Basic Usage
 
-## How it works
-1. script performs the following main functions:
-2. Sorts and renames PDF files from an input folder.
-3. The script takes three folder paths as input:
-    An input folder containing the original PDF files
-    A folder for corrupted PDFs
-    A folder for renamed PDFs
-4. For each PDF file in the input folder, the script: 
-  a. Checks if the file is a valid PDF using PyPDF2. 
-  b. If valid, it extracts the text content from the PDF. 
-  c. Sends the extracted content to OpenAI's GPT model to generate a new filename. 
-  d. Validates and trims the generated filename to ensure it only contains allowed characters and is not too long. 
-  e. Moves the PDF to the renamed folder with the new filename. 
-  f. If a file with the same name already exists, it appends a random hex string to make it unique.
+```bash
+python sortrenamemovepdf.py -i /path/to/pdfs -c /path/to/corrupted -r /path/to/renamed
+```
 
-If a PDF is corrupted or unreadable, it moves the file to the corrupted folder.
-The script uses OpenAI's API to generate meaningful filenames based on the content of the PDFs. It includes functions to handle token limits for the OpenAI API, ensuring that large PDFs are truncated if necessary. The script provides progress feedback using a progress bar (tqdm) to show the status of each file being processed. It includes error handling for various scenarios like file reading errors, API errors, etc. In essence, this script automates the process of organizing and renaming PDF files based on their content, separating valid and corrupted PDFs, and using AI to generate relevant filenames. This can be particularly useful for managing large collections of PDF documents with non-descriptive original filenames.
+### Using Different AI Providers
 
-## Limitations
-- The script uses the OpenAI API, which requires an API key and may incur costs.
-- Large PDF files or a large number of files may take significant time to process.
-- The quality of renamed files depends on the OpenAI model's interpretation of the PDF content.
+```bash
+# Use OpenAI's GPT-4o
+python sortrenamemovepdf.py -i ./input -c ./corrupted -r ./renamed -p openai -m gpt-4o
 
-## Contributing
-Contributions, issues, and feature requests are welcome. Feel free to check [issues page](https://github.com/yourusername/pdf-sorter-renamer/issues) if you want to contribute.
+# Use Claude
+python sortrenamemovepdf.py -i ./input -c ./corrupted -r ./renamed -p claude -m claude-3-sonnet
+
+# Use Gemini
+python sortrenamemovepdf.py -i ./input -c ./corrupted -r ./renamed -p gemini
+```
+
+### List Available Models
+
+```bash
+python sortrenamemovepdf.py --list-models
+```
+
+### Command-Line Arguments
+
+```
+-i, --input       Input folder containing PDF files
+-c, --corrupted   Folder for corrupted PDF files
+-r, --renamed     Folder for renamed PDF files
+-p, --provider    AI provider (openai, claude, gemini, deepseek)
+-m, --model       Model to use for the selected provider
+-k, --api-key     API key for the selected provider
+-l, --list-models List all available models by provider and exit
+```
+
+## How It Works
+
+1. The script scans the input folder for PDF files
+2. For each PDF:
+   - Extracts text content
+   - Sends the text to the selected AI provider
+   - Generates a descriptive filename
+   - Handles any duplicates with sequential numbering
+   - Moves the file to the renamed folder
+3. Corrupted PDFs are moved to the corrupted folder
+4. Progress is tracked to allow resuming if interrupted
+
+## Examples
+
+### Organizing Research Papers
+
+```bash
+python sortrenamemovepdf.py -i ./research_papers -c ./corrupted_papers -r ./organized_papers
+```
+
+### Processing Legal Documents with Claude
+
+```bash
+python sortrenamemovepdf.py -i ./legal_docs -c ./damaged_docs -r ./processed_docs -p claude -m claude-3-opus
+```
+
+## Troubleshooting
+
+- **Missing Dependencies**: Ensure you've installed the required packages for your chosen provider
+- **API Key Issues**: Check that your API key is valid and has been set correctly
+- **Processing Errors**: Corrupted PDFs will be automatically moved to the corrupted folder
+- **Rate Limiting**: The script includes exponential backoff for API retries
 
 ## License
-This project is licensed under the GNU General Public License v3.0 (GPL-3.0). See the [LICENSE](LICENSE) file for details.
 
-### GNU General Public License v3.0 (GPL-3.0)
-This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
-This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
-You should have received a copy of the GNU General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
+MIT License
