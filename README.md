@@ -1,19 +1,19 @@
 # PDF Sort, Rename & Move Utility
 
-A powerful utility for organizing your PDF documents using AI. This tool extracts content from PDFs, uses AI to generate descriptive filenames, and sorts them into appropriate folders.
+A powerful utility for organizing PDF documents using AI. This tool extracts content from PDFs, uses AI to generate descriptive filenames based on the content, and sorts them into appropriate folders.
 
 ## Features
 
-- **Multiple AI Provider Support**: Choose between OpenAI, Claude, Gemini, or Deepseek for text analysis
+- **Multiple AI Provider Support**: Choose between OpenAI, Claude, Gemini, or Deepseek for PDF content analysis
 - **Smart Filename Generation**: AI analyzes PDF content to create meaningful filenames
-- **Corrupted File Handling**: Automatically detects and segregates corrupted PDFs
+- **Corrupted File Handling**: Automatically detects and segregates corrupted or password-protected PDFs
 - **Progress Tracking**: Resumes processing if interrupted
-- **Flexible Command-Line Interface**: Easy to use with command-line arguments or interactive prompts
+- **Cross-Platform Compatible**: Works on Windows, macOS, and Linux
 
 ## Requirements
 
 ### Core Dependencies
-```
+```bash
 python >= 3.7
 PyPDF2 >= 3.0.0
 tiktoken >= 0.5.0
@@ -24,32 +24,32 @@ requests >= 2.31.0
 ### Provider-Specific Dependencies
 Install only what you need based on your preferred AI provider:
 
-```
-# For OpenAI
-openai >= 1.0.0
+```bash
+# For OpenAI (default)
+pip install openai
 
 # For Claude
-anthropic >= 0.5.0
+pip install anthropic
 
 # For Gemini
-google-generativeai >= 0.3.0
+pip install google-generativeai
 ```
 
 ## Installation
 
 1. Clone the repository:
-   ```
+   ```bash
    git clone https://github.com/yourusername/sort-rename-move-pdf.git
    cd sort-rename-move-pdf
    ```
 
 2. Install the core dependencies:
-   ```
+   ```bash
    pip install PyPDF2 tiktoken tqdm requests
    ```
 
 3. Install provider-specific dependencies (choose at least one):
-   ```
+   ```bash
    # For OpenAI
    pip install openai
    
@@ -112,12 +112,12 @@ python sortrenamemovepdf.py --list-models
 
 1. The script scans the input folder for PDF files
 2. For each PDF:
-   - Extracts text content
-   - Sends the text to the selected AI provider
+   - Extracts text content with intelligent page limiting for large files
+   - Sends the content to the selected AI provider
    - Generates a descriptive filename
-   - Handles any duplicates with sequential numbering
+   - Handles duplicates with sequential numbering
    - Moves the file to the renamed folder
-3. Corrupted PDFs are moved to the corrupted folder
+3. Corrupted or password-protected PDFs are moved to the corrupted folder
 4. Progress is tracked to allow resuming if interrupted
 
 ## Examples
@@ -134,13 +134,31 @@ python sortrenamemovepdf.py -i ./research_papers -c ./corrupted_papers -r ./orga
 python sortrenamemovepdf.py -i ./legal_docs -c ./damaged_docs -r ./processed_docs -p claude -m claude-3-opus
 ```
 
+### Processing Large Batches of Files
+
+For large batches, the tool automatically tracks progress and can be safely interrupted and resumed:
+
+```bash
+python sortrenamemovepdf.py -i ./large_batch -c ./corrupted -r ./processed
+```
+
 ## Troubleshooting
 
 - **Missing Dependencies**: Ensure you've installed the required packages for your chosen provider
 - **API Key Issues**: Check that your API key is valid and has been set correctly
-- **Processing Errors**: Corrupted PDFs will be automatically moved to the corrupted folder
+- **Processing Errors**: If you see specific errors, check the `pdf_processing_errors.log` file for details
 - **Rate Limiting**: The script includes exponential backoff for API retries
+
+## Performance Considerations
+
+- Very large PDFs are automatically limited to the first 100 pages for performance
+- For batch processing, the script uses efficient token counting and file handling
+- Progress is saved after each file, so it's safe to interrupt and resume later
 
 ## License
 
 MIT License
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
